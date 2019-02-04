@@ -1,0 +1,2 @@
+# crx
+Consul Registrator eXtended
