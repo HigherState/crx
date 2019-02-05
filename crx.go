@@ -41,10 +41,10 @@ var defaultName = flag.String("name", "", "Default service name")
 var defaultPort = flag.Int("port", 0, "Default service port")
 var httpAddr = flag.String("http-addr", "http://127.0.0.1:8500", "Consul agent URI")
 var defaultTags = flag.String("tags", "", "Append tags for all registered services")
-var taskArnTag = flag.String("task-arn-tag", "traefik.tags", "Tag name for ECS task ARN label")
-var defaultArn = flag.String("task-arn", "", "Default ECS task ARN (if task metadata endpoint not available)")
+var taskArnTag = flag.String("task-arn-tag", "", "Tag name for ECS task ARN label")
+var defaultArn = flag.String("task-arn", "", "Default ECS task ARN (if task-arn-tag set and task metadata endpoint not available)")
 var retryAttempts = flag.Int("retry-attempts", 2, "Max retry attempts to establish a connection with the consul agent. Use -1 for infinite retries")
-var retryInterval = flag.Int("retry-interval", 2000, "Interval (in millisecond) between retry-attempts.")
+var retryInterval = flag.Int("retry-interval", 2000, "Interval (in milliseconds) between retry-attempts.")
 
 func main() {
 	var err error
@@ -56,23 +56,33 @@ func main() {
 	}
 	flag.Parse()
 
+	if flag.NArg() == 0 {
+		// flags are not mandatory, but when running without flags, output usage message just in case
+		flag.Usage()
+	}
+
 	executionEnv := os.Getenv("AWS_EXECUTION_ENV")
 	var arn *string
 	var v2endpoint = "http://169.254.170.2/v2/metadata"
-	if executionEnv == "AWS_ECS_FARGATE" {
-		// use task metadata endpoint v2
-		arn, err = getTaskArn(v2endpoint)
-	} else if executionEnv == "AWS_ECS_EC2" {
-		// v2 availability assumes that we are using awsvpc networking
-		// see: https://docs.aws.amazon.com/AmazonECS/latest/developerguide/task-metadata-endpoint.html
-		arn, err = getTaskArn(v2endpoint)
-	} else {
-		arn = defaultArn
-	}
-	if arn == nil {
-		err = errors.New("Unknown error occurred trying to determine task ARN")
+	if *taskArnTag != "" {
+		if executionEnv == "AWS_ECS_FARGATE" {
+			// use task metadata endpoint v2
+			arn, err = getTaskArn(v2endpoint)
+		} else if executionEnv == "AWS_ECS_EC2" {
+			// v2 availability assumes that we are using awsvpc networking
+			// see: https://docs.aws.amazon.com/AmazonECS/latest/developerguide/task-metadata-endpoint.html
+			arn, err = getTaskArn(v2endpoint)
+		} else {
+			arn = defaultArn
+		}
+		if arn == nil {
+			err = errors.New("Unknown error occurred trying to determine task ARN")
+		}
 	}
 	assert(err)
+	if arn == nil {
+		arn = new(string)
+	}
 
 	if *defaultIP != "" {
 		ipAddrs := expandAddrs("-ip", defaultIP)
@@ -376,6 +386,8 @@ func newClient() (*consulapi.Client, error) {
 	}
 	config := consulapi.DefaultConfig()
 	switch scheme := uri.Scheme; scheme {
+	case "http":
+	// do nothing
 	case "https":
 		tlsConfigDesc := &consulapi.TLSConfig{
 			Address:            uri.Host,
@@ -394,7 +406,6 @@ func newClient() (*consulapi.Client, error) {
 		config.HttpClient.Transport = transport
 	}
 	config.Address = uri.Host
-	config.Address = *httpAddr
 	client, err := consulapi.NewClient(config)
 	return client, err
 }
