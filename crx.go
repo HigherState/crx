@@ -7,12 +7,14 @@ import (
 	"log"
 	"math/rand"
 	"net"
+	"net/url"
 	"os"
 	"strconv"
 	"strings"
 	"time"
 
 	consulapi "github.com/hashicorp/consul/api"
+	cleanhttp "github.com/hashicorp/go-cleanhttp"
 	"github.com/hashicorp/go-sockaddr/template"
 )
 
@@ -34,6 +36,8 @@ var defaultID = flag.String("id", "", "Default service ID")
 var defaultIP = flag.String("ip", "127.0.0.1", "Default IP to register service for (can be go-sockaddr template)")
 var defaultName = flag.String("name", "", "Default service name")
 var defaultPort = flag.Int("port", 0, "Default service port")
+var httpAddr = flag.String("http-addr", "http://127.0.0.1:8500", "Consul agent URI")
+var defaultTags = flag.String("tags", "", "Append tags for all registered services")
 var taskArnTag = flag.String("task-arn-tag", "traefik.tags", "Tag name for ECS task ARN label (only used for awsvpc)")
 var arn = flag.String("task-arn", "", "ECS task ARN (get this from task metadata endpoint)")
 var retryAttempts = flag.Int("retry-attempts", 2, "Max retry attempts to establish a connection with the consul agent. Use -1 for infinite retries")
@@ -71,10 +75,15 @@ func main() {
 		port := ports[i]
 		metadata, _ := serviceMetaData(strconv.Itoa(port))
 
-		var tags = combineTags(mapDefault(metadata, "tags", ""))
+		var tags = combineTags(mapDefault(metadata, "tags", ""), *defaultTags)
 		var name = mapDefault(metadata, "name", *defaultName+"-"+strconv.Itoa(port))
 		var id = mapDefault(metadata, "id", *defaultID)
 		var portIP = mapDefault(metadata, "ip", *defaultIP)
+		delete(metadata, "tags")
+		delete(metadata, "name")
+		delete(metadata, "id")
+		delete(metadata, "ip")
+
 		// SERVICE_x_IP can (and usually will) contain a go_sockaddr so we need to resolve it
 		var expandedAddrs = expandAddrs(fmt.Sprintf("Port %v", port), &portIP)
 		if len(expandedAddrs) == 0 {
@@ -105,26 +114,25 @@ func main() {
 			tags = append(tags, *taskArnTag+"="+*arn)
 		}
 
-		service := new(service)
-		service.Name = name
-		service.ID = id
-		service.IP = expandedIP
-		service.Port = port
-		service.Tags = tags
-		service.Meta = metadata
+		service := &service{
+			Name: name,
+			ID:   id,
+			IP:   expandedIP,
+			Port: port,
+			Tags: tags,
+			Meta: metadata,
+		}
 
 		log.Printf("Port %v: service name %s, ip %s, id %s, tags %v \n", service.Port, service.Name, service.IP, service.ID, service.Tags)
 		services = append(services, service)
 	}
 
-	config := consulapi.DefaultConfig()
-	client, err := consulapi.NewClient(config)
+	var client, err = newClient()
 	assert(err)
 
 	attempt := 0
 	for *retryAttempts == -1 || attempt <= *retryAttempts {
-		log.Printf("Connecting to consul agent (%v/%v)", attempt, *retryAttempts)
-
+		log.Printf("Connecting to consul agent (%v/%v) at %s", attempt, *retryAttempts, *httpAddr)
 		err = ping(client)
 		if err == nil {
 			break
@@ -150,15 +158,15 @@ func main() {
 }
 
 func buildReg(service *service) *consulapi.AgentServiceRegistration {
-	registration := new(consulapi.AgentServiceRegistration)
-	registration.ID = service.ID
-	registration.Name = service.Name
-	registration.Port = service.Port
-	registration.Address = service.IP
-	registration.Kind = consulapi.ServiceKindTypical
-	registration.Check = buildCheck(service)
-	registration.Meta = service.Meta
-	return registration
+	return &consulapi.AgentServiceRegistration{
+		ID:      service.ID,
+		Name:    service.Name,
+		Port:    service.Port,
+		Address: service.IP,
+		Kind:    consulapi.ServiceKindTypical,
+		Check:   buildCheck(service),
+		Meta:    service.Meta,
+	}
 }
 
 // ping will try to connect to consul by attempting to retrieve the current leader.
@@ -340,4 +348,34 @@ func combineTags(tagParts ...string) []string {
 		tags = append(tags, recParseEscapedComma(element)...)
 	}
 	return tags
+}
+
+func newClient() (*consulapi.Client, error) {
+	uri, err := url.Parse(*httpAddr)
+	if err != nil {
+		return nil, err
+	}
+	config := consulapi.DefaultConfig()
+	switch scheme := uri.Scheme; scheme {
+	case "https":
+		tlsConfigDesc := &consulapi.TLSConfig{
+			Address:            uri.Host,
+			CAFile:             os.Getenv("CONSUL_CACERT"),
+			CertFile:           os.Getenv("CONSUL_TLSCERT"),
+			KeyFile:            os.Getenv("CONSUL_TLSKEY"),
+			InsecureSkipVerify: false,
+		}
+		tlsConfig, err := consulapi.SetupTLSConfig(tlsConfigDesc)
+		if err != nil {
+			return nil, err
+		}
+		config.Scheme = "https"
+		transport := cleanhttp.DefaultPooledTransport()
+		transport.TLSClientConfig = tlsConfig
+		config.HttpClient.Transport = transport
+	}
+	config.Address = uri.Host
+	config.Address = *httpAddr
+	client, err := consulapi.NewClient(config)
+	return client, err
 }
