@@ -39,7 +39,7 @@ var defaultID = flag.String("id", "", "Default service ID")
 var defaultIP = flag.String("ip", "127.0.0.1", "Default IP to register service for (can be go-sockaddr template)")
 var defaultName = flag.String("name", "", "Default service name")
 var defaultPort = flag.Int("port", 0, "Default service port")
-var httpAddr = flag.String("http-addr", "http://127.0.0.1:8500", "Consul agent URI")
+var consulAddr = flag.String("consul-addr", "http://127.0.0.1:8500", "Consul agent URI")
 var defaultTags = flag.String("tags", "", "Append tags for all registered services")
 var taskArnTag = flag.String("task-arn-tag", "", "Tag name for ECS task ARN label")
 var defaultArn = flag.String("task-arn", "", "Default ECS task ARN (if task-arn-tag set and task metadata endpoint not available)")
@@ -164,7 +164,7 @@ func main() {
 
 	attempt := 0
 	for *retryAttempts == -1 || attempt <= *retryAttempts {
-		log.Printf("Connecting to consul agent (%v/%v) at %s", attempt, *retryAttempts, *httpAddr)
+		log.Printf("Connecting to consul agent (%v/%v) at %s", attempt, *retryAttempts, *consulAddr)
 		err = ping(client)
 		if err == nil {
 			break
@@ -380,7 +380,7 @@ func combineTags(tagParts ...string) []string {
 }
 
 func newClient() (*consulapi.Client, error) {
-	uri, err := url.Parse(*httpAddr)
+	uri, err := url.Parse(*consulAddr)
 	if err != nil {
 		return nil, err
 	}
