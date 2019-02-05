@@ -56,7 +56,7 @@ func main() {
 	}
 	flag.Parse()
 
-	if flag.NArg() == 0 {
+	if flag.NFlag() == 0 {
 		// flags are not mandatory, but when running without flags, output usage message just in case
 		flag.Usage()
 	}
