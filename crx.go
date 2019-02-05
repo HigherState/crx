@@ -1,12 +1,15 @@
 package main
 
 import (
+	"encoding/json"
 	"errors"
 	"flag"
 	"fmt"
+	"io/ioutil"
 	"log"
 	"math/rand"
 	"net"
+	"net/http"
 	"net/url"
 	"os"
 	"strconv"
@@ -38,12 +41,13 @@ var defaultName = flag.String("name", "", "Default service name")
 var defaultPort = flag.Int("port", 0, "Default service port")
 var httpAddr = flag.String("http-addr", "http://127.0.0.1:8500", "Consul agent URI")
 var defaultTags = flag.String("tags", "", "Append tags for all registered services")
-var taskArnTag = flag.String("task-arn-tag", "traefik.tags", "Tag name for ECS task ARN label (only used for awsvpc)")
-var arn = flag.String("task-arn", "", "ECS task ARN (get this from task metadata endpoint)")
+var taskArnTag = flag.String("task-arn-tag", "traefik.tags", "Tag name for ECS task ARN label")
+var defaultArn = flag.String("task-arn", "", "Default ECS task ARN (if task metadata endpoint not available)")
 var retryAttempts = flag.Int("retry-attempts", 2, "Max retry attempts to establish a connection with the consul agent. Use -1 for infinite retries")
 var retryInterval = flag.Int("retry-interval", 2000, "Interval (in millisecond) between retry-attempts.")
 
 func main() {
+	var err error
 
 	flag.Usage = func() {
 		fmt.Fprintf(os.Stderr, "Usage of %s:\n", os.Args[0])
@@ -51,6 +55,24 @@ func main() {
 		flag.PrintDefaults()
 	}
 	flag.Parse()
+
+	executionEnv := os.Getenv("AWS_EXECUTION_ENV")
+	var arn *string
+	var v2endpoint = "http://169.254.170.2/v2/metadata"
+	if executionEnv == "AWS_ECS_FARGATE" {
+		// use task metadata endpoint v2
+		arn, err = getTaskArn(v2endpoint)
+	} else if executionEnv == "AWS_ECS_EC2" {
+		// v2 availability assumes that we are using awsvpc networking
+		// see: https://docs.aws.amazon.com/AmazonECS/latest/developerguide/task-metadata-endpoint.html
+		arn, err = getTaskArn(v2endpoint)
+	} else {
+		arn = defaultArn
+	}
+	if arn == nil {
+		err = errors.New("Unknown error occurred trying to determine task ARN")
+	}
+	assert(err)
 
 	if *defaultIP != "" {
 		ipAddrs := expandAddrs("-ip", defaultIP)
@@ -127,7 +149,7 @@ func main() {
 		services = append(services, service)
 	}
 
-	var client, err = newClient()
+	client, err := newClient()
 	assert(err)
 
 	attempt := 0
@@ -138,7 +160,7 @@ func main() {
 			break
 		}
 
-		if err != nil && attempt == *retryAttempts {
+		if attempt == *retryAttempts {
 			assert(err)
 		}
 
@@ -149,11 +171,8 @@ func main() {
 	for i := range services {
 		service := services[i]
 		reg := buildReg(service)
-
-		res := client.Agent().ServiceRegister(reg)
-		if res != nil {
-			log.Fatal(res)
-		}
+		err := client.Agent().ServiceRegister(reg)
+		assert(err)
 	}
 }
 
@@ -378,4 +397,30 @@ func newClient() (*consulapi.Client, error) {
 	config.Address = *httpAddr
 	client, err := consulapi.NewClient(config)
 	return client, err
+}
+
+func getTaskArn(endpoint string) (*string, error) {
+
+	response, err := http.DefaultClient.Get(endpoint)
+	if err != nil {
+		return nil, err
+	}
+	defer response.Body.Close()
+
+	var jsonResult []byte
+	if response.StatusCode == http.StatusOK {
+		jsonResult, err = ioutil.ReadAll(response.Body)
+	} else {
+		return nil, nil
+	}
+	if err != nil {
+		return nil, err
+	}
+
+	var taskMetadata map[string]interface{}
+	json.Unmarshal(jsonResult, &taskMetadata)
+
+	var taskARN = taskMetadata["TaskARN"].(string)
+
+	return &taskARN, nil
 }
