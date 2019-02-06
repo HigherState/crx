@@ -334,7 +334,7 @@ func declaredServicePorts() []int {
 			}
 		}
 	}
-	return ports
+	return unique(ports)
 }
 
 func mapDefault(m map[string]string, key, defaultVal string) string {
@@ -434,4 +434,16 @@ func getTaskArn(endpoint string) (*string, error) {
 	var taskARN = taskMetadata["TaskARN"].(string)
 
 	return &taskARN, nil
+}
+
+func unique(intSlice []int) []int {
+	keys := make(map[int]bool)
+	list := []int{}
+	for _, entry := range intSlice {
+		if _, value := keys[entry]; !value {
+			keys[entry] = true
+			list = append(list, entry)
+		}
+	}
+	return list
 }
