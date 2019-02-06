@@ -1,4 +1,4 @@
-[![Build Status](https://travis-ci.org/HigherState/crx.svg?branch=master)](https://travis-ci.org/HigherState/crx)
+[![Build Status](https://travis-ci.com/HigherState/crx.svg?branch=master)](https://travis-ci.com/HigherState/crx)
 
 # crx
 Consul Registrator reduX
